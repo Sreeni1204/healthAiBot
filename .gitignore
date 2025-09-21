@@ -1,0 +1,13 @@
+# virtual environment
+venv/
+
+# jupyter notebook checkpoints
+jupyterbooks/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# unwanted source files
+source_code.py
