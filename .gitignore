@@ -11,3 +11,6 @@ __pycache__/
 
 # unwanted source files
 source_code.py
+
+# ipynb checkpoints
+.ipynb_checkpoints/
