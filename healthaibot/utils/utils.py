@@ -4,8 +4,28 @@
 Utility functions for HealthBot operations.
 """
 
+from pydantic import BaseModel, Field
+from typing import List, Optional, Any, Dict
+
 from langchain_openai import ChatOpenAI
-from langchain_ollama.llms import OllamaLLM as Ollama
+from langchain_ollama.chat_models import ChatOllama
+
+
+class HealthBotState(BaseModel):
+    messages: List[Dict[str, str]] = Field(default_factory=list)
+    topic: Optional[str] = None
+    focus: Optional[str] = None
+    search_results: Optional[str] = None
+    summary: Optional[str] = None
+    question: Optional[str] = None
+    quiz_question: Optional[str] = None
+    quiz_answer: Optional[str] = None
+    quiz_grade: Optional[str] = None
+    grading: Optional[str] = None
+    continue_flag: Optional[str] = None
+    previous_questions: List[str] = Field(default_factory=list)
+    tool_call_events: List[Any] = Field(default_factory=list)
+    llm: Optional[Any] = None
 
 
 class HealthBotUtils:
@@ -31,11 +51,11 @@ class HealthBotUtils:
 
     def get_llm(
         self,
-    ) -> ChatOpenAI | Ollama:
+    ) -> ChatOpenAI | ChatOllama:
         """
         Get the LLM instance based on the specified type.
         Returns:
-            An instance of ChatOpenAI or Ollama.
+            An instance of ChatOpenAI or ChatOllama.
         """
         if self.llm_type == "openai":
             return ChatOpenAI(
@@ -43,7 +63,7 @@ class HealthBotUtils:
                 temperature=self.temperature
             )
         elif self.llm_type == "ollama":
-            return Ollama(
+            return ChatOllama(
                 model=self.model_name,
                 temperature=self.temperature
             )
@@ -52,21 +72,13 @@ class HealthBotUtils:
 
     def reset_state(
         self,
-        llm: ChatOpenAI | Ollama,
-    ) -> dict:
+        llm: ChatOpenAI | ChatOllama,
+    ) -> HealthBotState:
         """
         Reset the state of the HealthBot.
         """
         # Clear previous health information to maintain privacy
-        return {
-            'topic': None,
-            'search_results': None,
-            'summary': None,
-            'quiz_question': None,
-            'quiz_answer': None,
-            'grading': None,
-            'llm': llm
-        }
+        return HealthBotState(llm=llm)
 
     def parse_quiz(
         self,

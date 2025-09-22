@@ -20,13 +20,13 @@ def main():
     parser.add_argument(
         '--llm_type',
         choices=['openai', 'ollama'],
-        default='openai',
+        default='ollama',
         help='Choose LLM backend: openai or ollama'
     )
     parser.add_argument(
         '--model_name',
         type=str,
-        default='gpt-3.5-turbo',
+        default='gemma3:1b',
         help='Model name for LLM'
     )
     parser.add_argument(
@@ -38,53 +38,61 @@ def main():
     # Add more arguments as needed
     args = parser.parse_args()
 
-    build_healthbot_graph()
-
     healthbot = HealthBotUtils(
         llm_type=args.llm_type,
         model_name=args.model_name,
         temperature=args.temperature,
     )
-
+    
     llm = healthbot.get_llm()
 
-    graphhelper = GraphHelper()
+
+    graph = build_healthbot_graph(llm)
+    app = graph.compile()
 
     print("Welcome to HealthBot!")
     while True:
         state = healthbot.reset_state(llm)
-        state['topic'] = input("What health topic or medical condition would you like to learn about? ")
-        print(f"You have chosen to learn about: {state['topic']}")
+        # Run the graph workflow to execute the full flow including focus question
+        state = app.invoke(state)
 
-        # Search and summarize
-        state = graphhelper.search_tavily(state)
-        # Ask for focus after summary
-        focus = input("Do you want to focus on a specific aspect (e.g., symptoms, treatment, prevention)? If yes, enter it, otherwise press Enter: ")
-        if focus.strip():
-            state['focus'] = focus.strip()
-        state = graphhelper.summarize_results(state)
-        graphhelper.present_summary(state)
-        graphhelper.comprehension_prompt(state)
+        # The graph already handled focus, search, summarization, and summary presentation
+        # No need to duplicate these steps here
+        
+        # Convert state back to HealthBotState if it's a dict
+        if isinstance(state, dict):
+            from healthaibot.utils.utils import HealthBotState
+            state = HealthBotState(**state)
 
         # Track previous questions for this topic
-        state['previous_questions'] = []
+        if not hasattr(state, 'previous_questions'):
+            state.previous_questions = []
+        
+        # Create GraphHelper for quiz operations
+        graphhelper = GraphHelper()
         quiz_active = True
         while quiz_active:
             # Create and present quiz
             state = graphhelper.create_quiz(state)
-            question, options = healthbot.parse_quiz(state['quiz_question'])
+            question, options = healthbot.parse_quiz(state.quiz_question)
             print("\nQuiz Question:\n" + question)
             for opt in options:
                 print(opt)
-            state['previous_questions'].append(question)
+            state.previous_questions.append(question)
             state = graphhelper.get_quiz_answer(state)
             state = graphhelper.grade_quiz(state)
-            graphhelper.present_feedback(state)
+            state = graphhelper.present_feedback(state)
 
-            next_action = input("Would you like to take another quiz on this topic (enter 'quiz'), learn about a new topic (enter 'new'), or exit (enter 'exit')? ")
+            try:
+                next_action = input("Would you like to take another quiz on this topic (enter 'quiz'), learn about a new topic (enter 'new'), or exit (enter 'exit')? ")
+            except EOFError:
+                print("\nInput ended unexpectedly. Thank you for using HealthBot. Stay healthy!")
+                return
             if next_action.lower() == 'quiz':
-                continue  # Stay in quiz loop, do not prompt again
+                print("Let's take another quiz on this topic!")
+                continue  # Stay in quiz loop
             elif next_action.lower() == 'new':
+                print("Let's learn about a new topic!")
                 quiz_active = False  # Break quiz loop, go to new topic
             elif next_action.lower() == 'exit':
                 print("Thank you for using HealthBot. Stay healthy!")
