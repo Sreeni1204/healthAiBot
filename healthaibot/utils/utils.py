@@ -12,7 +12,10 @@ from langchain_ollama.chat_models import ChatOllama
 
 
 class HealthBotState(BaseModel):
-    messages: List[Dict[str, str]] = Field(default_factory=list)
+    messages: List[Dict[str, str]] = Field(
+        default_factory=list, 
+        description="List of conversation messages including tool calls for traceability"
+    )
     topic: Optional[str] = None
     focus: Optional[str] = None
     search_results: Optional[str] = None
@@ -24,7 +27,10 @@ class HealthBotState(BaseModel):
     grading: Optional[str] = None
     continue_flag: Optional[str] = None
     previous_questions: List[str] = Field(default_factory=list)
-    tool_call_events: List[Any] = Field(default_factory=list)
+    tool_call_events: List[Any] = Field(
+        default_factory=list, 
+        description="Legacy tool call tracking - use messages for better traceability"
+    )
     llm: Optional[Any] = None
 
 
@@ -86,17 +92,25 @@ class HealthBotUtils:
     ) -> tuple[str, list[str]]:
         """
         Parse the quiz text into a question and options.
+        Now handles both single questions and multiple choice questions.
         """
         # Simple parser to split question and options
         lines = quiz_text.strip().split('\n')
         question = ""
         options = []
+        
         for line in lines:
+            # Check for multiple choice options
             if line.startswith("a)") or line.startswith("b)") or line.startswith("c)") or line.startswith("d)"):
                 options.append(line)
             elif line.lower().startswith("question:"):
                 question = line[len("Question:"):].strip()
-            elif line and not line.startswith("summary:"):
-                question += " " + line.strip()
+            elif line and not line.startswith("summary:") and not line.startswith("previous questions:"):
+                if question:
+                    question += " " + line.strip()
+                else:
+                    question = line.strip()
         
-        return question, options
+        # If no options found, this is a single question (not MCQ)
+        # Return empty options list to indicate open-ended question
+        return question.strip(), options

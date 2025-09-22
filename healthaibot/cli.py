@@ -75,9 +75,14 @@ def main():
             # Create and present quiz
             state = graphhelper.create_quiz(state)
             question, options = healthbot.parse_quiz(state.quiz_question)
-            print("\nQuiz Question:\n" + question)
-            for opt in options:
-                print(opt)
+            print("\nQuiz Question:")
+            print(question)
+            
+            # Only print options if this is a multiple choice question
+            if options:
+                for opt in options:
+                    print(opt)
+            
             state.previous_questions.append(question)
             state = graphhelper.get_quiz_answer(state)
             state = graphhelper.grade_quiz(state)
