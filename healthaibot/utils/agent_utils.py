@@ -1,40 +1,28 @@
-# /usr/bin/env python3
-# healthAiBot/healthaibot/utils/agent_utils.py
-"""
-Utility functions for HealthBot agent operations.
-"""
+"""Utility functions for HealthBot agent operations with quiz flow enforcement."""
 
 from datetime import datetime
-from typing import Optional, Callable
-from langchain_tavily import TavilySearch
 from healthaibot.utils.utils import HealthBotState
+import os
+from langchain_tavily import TavilySearch
+from langchain.tools import tool
 
 
+@tool("tavily_search_tool", return_direct=True)
 def tavily_search_tool(topic: str) -> str:
-    """Search for medical information from trusted sources like NIH, Mayo Clinic, and WebMD."""
+    """Search authoritative medical sources (NIH, Mayo Clinic, WebMD) for the given topic."""
+    if not os.environ.get("TAVILY_API_KEY"):
+        raise ValueError("Missing Tavily API key. Please export TAVILY_API_KEY before running the agent.")
     search = TavilySearch()
     query = f"{topic} site:nih.gov OR site:mayoclinic.org OR site:webmd.com"
-    return search.invoke(query)
+    return str(search.invoke(query))
 
 
 class GraphHelper:
-    """
-    Helper class for managing graph-related operations.
-    """
-    def __init__(
-        self,
-    ) -> None:
-        """
-        Initialize with the current state.
-        """
+    def __init__(self) -> None:  # No special init needed
+        pass
 
-    def ask_patient(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Prompt the user for a health topic and update the state.
-        """
+    # ---------------- Core Interaction Nodes -----------------
+    def ask_patient(self, state: HealthBotState) -> HealthBotState:
         try:
             topic = input("What health topic or medical condition would you like to learn about? ")
         except EOFError:
@@ -42,40 +30,26 @@ class GraphHelper:
             exit(0)
         state.topic = topic
         print(f"You have chosen to learn about: {state.topic}")
-        
-        # Add user input to messages for traceability
-        user_input_message = {
+        state.messages.append({
             "role": "user",
             "content": f"I want to learn about {state.topic}.",
             "action": "topic_selection",
             "timestamp": str(datetime.now())
-        }
-        state.messages.append(user_input_message)
-        
+        })
         return state
 
-    def generate_assistant_message(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Generate an assistant message after user input, required for ToolNode.
-        """
-        # Set context and messages
+    def generate_assistant_message(self, state: HealthBotState) -> HealthBotState:
+        # Seed conversation and include an assistant message that simulates a tool call request.
         state.messages = [
             {"role": "system", "content": "You are a helpful medical information assistant."},
             {"role": "user", "content": f"I want to learn about {state.topic}."},
-            {"role": "assistant", "content": f"I'll search for accurate information about {state.topic} from reliable medical sources. Let me use the search tool to find relevant details."}
+            {"role": "assistant", "content": f"Initiating search for {state.topic} using tavily_search_tool.", "tool_calls": [
+                {"id": "call_tavily_1", "name": "tavily_search_tool", "arguments": {"topic": state.topic}}
+            ]}
         ]
         return state
 
-    def ask_for_focus(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Ask the user if they want to focus on a specific aspect.
-        """
+    def ask_for_focus(self, state: HealthBotState) -> HealthBotState:
         if not state.focus:
             try:
                 focus = input("Do you want to focus on a specific aspect (e.g., symptoms, treatment, prevention)? If yes, enter it, otherwise press Enter: ")
@@ -84,327 +58,271 @@ class GraphHelper:
                 focus = ""
             if focus.strip():
                 state.focus = focus.strip()
-                
-            # Add focus selection to messages for traceability
-            focus_message = {
+            state.messages.append({
                 "role": "user",
                 "content": f"Focus selection: {state.focus if state.focus else 'No specific focus'}",
                 "action": "focus_selection",
                 "timestamp": str(datetime.now())
-            }
-            state.messages.append(focus_message)
-            
+            })
         return state
 
-    def ask_for_focus(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Ask the user if they want to focus on a specific aspect.
-        """
-        if not state.focus:
-            try:
-                focus = input("Do you want to focus on a specific aspect (e.g., symptoms, treatment, prevention)? If yes, enter it, otherwise press Enter: ")
-            except EOFError:
-                print("\nInput ended unexpectedly. Using no specific focus.")
-                focus = ""
-            if focus.strip():
-                state.focus = focus.strip()
+    def search_tavily(self, state: HealthBotState) -> HealthBotState:
+        state.tool_call_events.append({
+            "event": "tool_call", "tool": "tavily_search_tool", "topic": state.topic
+        })
         return state
 
-    def search_tavily(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Search for relevant information using the Tavily ToolNode.
-        Record tool call event in state.
-        """
-        # Example event recording (actual tool call handled by ToolNode)
-        event = {
-            "event": "tool_call",
-            "tool": "tavily_search_tool",
-            "topic": state.topic
-        }
-        state.tool_call_events.append(event)
-        return state
-
-    def summarize_results(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Summarize the search results using the LLM.
-        Enforce: summary must be exactly 3–4 paragraphs, use no outside knowledge, and be strictly based on tool output.
-        """
+    def summarize_results(self, state: HealthBotState) -> HealthBotState:
         llm = state.llm
         focus = getattr(state, 'focus', None)
-        
+        # If no real search results (API key missing or fallback placeholder), avoid hallucination
+        if not state.search_results or 'Missing Tavily API key' in state.search_results:
+            state.summary = (
+                "Search unavailable because Tavily API key is missing. "
+                "Set TAVILY_API_KEY and restart to generate an evidence-based summary."
+            )
+            return state
         base_prompt = (
-            "You are a medical information assistant. Your task is to summarize the provided search results for a patient.\n\n"
-            "STRICT REQUIREMENTS:\n"
-            "1. Write EXACTLY 3-4 paragraphs - no more, no less\n"
-            "2. Use ONLY the information provided in the search results below\n"
-            "3. Do NOT add any outside knowledge, personal opinions, or information not found in the search results\n"
-            "4. Write in simple, patient-friendly language\n"
-            "5. Each paragraph should be 3-5 sentences long\n"
-            "6. If information is missing from the search results, explicitly state 'The search results do not provide information about [topic]'\n\n"
+            "You are a medical information assistant. Summarize the search results for a patient.\n\n"
+            "MANDATORY FORMAT & RULES (FOLLOW EXACTLY):\n"
+            "1. Output MUST be EXACTLY 3 TO 4 paragraphs. No other number is acceptable.\n"
+            "2. Paragraphs are separated by ONE blank line (a single empty line).\n"
+            "3. Each paragraph MUST be between 3 and 5 sentences (inclusive).\n"
+            "4. Use ONLY information present in the search results. If something isn't there, do NOT invent it.\n"
+            "5. If an expected aspect is missing, explicitly state: 'The search results do not provide information about <missing aspect>'.\n"
+            "6. Do NOT include bullet lists, numbering, headings, markdown, or metadata. Plain paragraphs only.\n"
+            "7. If you cannot satisfy ALL rules with given content, write EXACTLY this sentence alone: 'The search results are insufficient to produce a compliant summary.'\n"
+            "8. Do NOT mention these instructions or justify your formatting.\n\n"
+            "QUALITY GUIDELINES:\n"
+            "- Use clear, patient-friendly language.\n"
+            "- Avoid redundancy; group related facts.\n"
+            "- Prefer concrete facts over vague generalities.\n\n"
+            "ACCEPTABLE EXAMPLE (3 paragraphs):\n"
+            "Paragraph 1: Overview sentences 1-5.\n"
+            "\nParagraph 2: Focused detail sentences 1-4.\n"
+            "\nParagraph 3: Limitations + missing info sentences 1-3.\n\n"
+            "UNACCEPTABLE EXAMPLES (DO NOT DO):\n"
+            "- A single long block (fails rule 1).\n"
+            "- 5 paragraphs (fails rule 1).\n"
+            "- Paragraphs with 1–2 sentences (fails rule 3).\n"
+            "- Bullet lists or headings (fails rule 6).\n\n"
         )
-        
         if focus:
-            base_prompt += f"FOCUS REQUIREMENT: Emphasize information about '{focus}' while maintaining the 3-4 paragraph structure.\n\n"
-        
+            base_prompt += f"FOCUS REQUIREMENT: Emphasize information about '{focus}'.\n\n"
         base_prompt += (
-            "FORMAT: Write exactly 3-4 paragraphs separated by blank lines. Do not include headers, bullet points, or numbered lists.\n\n"
+            "FORMAT: Write EXACTLY 3 TO 4 paragraphs separated by blank lines. Do not include headers, bullet points, or numbered lists.\n\n"
             "SEARCH RESULTS TO SUMMARIZE:\n"
         )
-        
-        prompt = base_prompt + state.search_results
-        
-        # Add LLM request to messages for traceability
-        llm_request_message = {
-            "role": "user",
-            "content": f"Requesting summary generation for topic: {state.topic}",
-            "action": "summarize_results",
-            "focus": focus if focus else "None"
-        }
-        state.messages.append(llm_request_message)
-        
+        prompt = base_prompt + (state.search_results or "")
+        state.messages.append({
+            "role": "user", "content": f"Requesting summary generation for topic: {state.topic}",
+            "action": "summarize_results", "focus": focus if focus else "None"
+        })
+        if llm is None:
+            state.summary = "LLM not initialized."
+            return state
         summary = llm.invoke(prompt)
-        # Extract content from AIMessage if needed
-        if hasattr(summary, 'content'):
-            state.summary = summary.content
-        else:
-            state.summary = str(summary)
-            
-        # Add LLM response to messages for traceability
-        llm_response_message = {
+        state.summary = summary.content if hasattr(summary, 'content') else str(summary)
+        state.messages.append({
             "role": "assistant",
             "content": f"Generated summary for {state.topic} ({len(state.summary)} characters)",
             "action": "summarize_results_complete",
             "summary_length": str(len(state.summary))
-        }
-        state.messages.append(llm_response_message)
-        
+        })
         return state
 
-    def present_summary(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Present the summarized information to the user.
-        """
+    def present_summary(self, state: HealthBotState) -> HealthBotState:
         print("\nHere is a summary of what you asked about:\n")
         print(state.summary)
         return state
 
-    def comprehension_prompt(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Prompt the user for a comprehension check.
-        """
+    def comprehension_prompt(self, state: HealthBotState) -> HealthBotState:
         try:
             input("\nPress Enter when you are ready to take a comprehension check.")
         except EOFError:
             print("\nInput ended unexpectedly. Proceeding with comprehension check.")
         return state
 
-    def create_quiz(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Create a quiz based on the current state.
-        Enforce: quiz must be based only on the summary, single question, and answerable using summary alone.
-        """
+    # ---------------- Quiz Flow Nodes -----------------
+    def create_quiz(self, state: HealthBotState) -> HealthBotState:
         llm = state.llm
-        previous_questions = getattr(state, 'previous_questions', [])
-        
+        previous = list(getattr(state, 'previous_questions', []))
         prompt = (
             "Create ONE comprehension question based EXCLUSIVELY on the provided summary below.\n\n"
             "STRICT REQUIREMENTS:\n"
-            "1. Create ONLY ONE question - not multiple choice, just a single question\n"
+            "1. Create ONLY ONE question (open-ended)\n"
             "2. The question must be answerable ONLY using information from the summary\n"
-            "3. Do NOT use any outside knowledge or information not in the summary\n"
-            "4. The question should test understanding of key information from the summary\n"
-            "5. Do NOT reveal the correct answer in your response\n"
-            "6. Do NOT repeat any of the previous questions listed below\n\n"
-            "QUESTION TYPES (choose the most appropriate):\n"
-            "- What is/are... (factual questions)\n"
-            "- Why does/is... (explanation questions)\n"
-            "- How does/can... (process questions)\n"
-            "- Which statement best describes... (comprehension questions)\n\n"
-            "FORMAT: Provide only the question text, nothing else.\n\n"
-            f"SUMMARY TO BASE QUESTION ON:\n{state.summary}\n\n"
-            f"PREVIOUS QUESTIONS TO AVOID:\n{previous_questions if previous_questions else 'None'}\n\n"
-            "YOUR SINGLE QUESTION:"
+            "3. No outside knowledge\n"
+            "4. Test key understanding of the summary\n"
+            "5. Do NOT reveal the answer\n"
+            "6. Do NOT repeat any previous questions\n\n"
+            "FORMAT: Output just the question text.\n\n"
+            f"SUMMARY:\n{state.summary}\n\n"
+            f"PREVIOUS QUESTIONS:\n{previous if previous else 'None'}\n\n"
+            "QUESTION:"
         )
-        
-        # Add quiz creation request to messages for traceability
-        quiz_request_message = {
-            "role": "user",
-            "content": f"Requesting quiz question generation for topic: {state.topic}",
-            "action": "create_quiz",
-            "previous_questions_count": str(len(previous_questions))
-        }
-        state.messages.append(quiz_request_message)
-        
-        quiz_question = llm.invoke(prompt)
-        # Extract content from AIMessage if needed
-        if hasattr(quiz_question, 'content'):
-            state.quiz_question = quiz_question.content
+        state.messages.append({
+            "role": "user", "content": f"Requesting quiz question for {state.topic}",
+            "action": "create_quiz", "previous_questions_count": str(len(previous))
+        })
+        if llm is None:
+            state.quiz_question = "LLM not initialized to create quiz question."
+            return state
+        raw = llm.invoke(prompt)
+        raw_text = raw.content.strip() if hasattr(raw, 'content') else str(raw).strip()
+        candidate_lines = [ln.strip() for ln in raw_text.split('\n') if ln.strip()]
+        selected = ""
+        for ln in candidate_lines:
+            if '?' in ln and not selected:
+                selected = ln
+            elif '?' in ln and selected:
+                state.messages.append({
+                    "role": "assistant", "content": f"Discarded extra question: {ln[:80]}",
+                    "action": "create_quiz_sanitizer"
+                })
+        if not selected and candidate_lines:
+            selected = candidate_lines[0]
+        for prefix in ["question:", "q:", "q1:"]:
+            if selected.lower().startswith(prefix):
+                selected = selected[len(prefix):].strip()
+        if not selected.endswith('?'):
+            selected = selected.rstrip('.') + '?'
+        if selected not in previous:
+            previous.append(selected)
         else:
-            state.quiz_question = str(quiz_question)
-            
-        # Add quiz creation response to messages for traceability
-        quiz_response_message = {
-            "role": "assistant",
-            "content": f"Generated quiz question for {state.topic}",
-            "action": "create_quiz_complete",
-            "question_preview": state.quiz_question[:100] + "..." if len(state.quiz_question) > 100 else state.quiz_question
-        }
-        state.messages.append(quiz_response_message)
-        
+            state.messages.append({
+                "role": "assistant", "content": "Duplicate question detected (kept).",
+                "action": "create_quiz_duplicate"
+            })
+        state.previous_questions = previous
+        state.quiz_question = selected
+        preview = selected[:100] + "..." if len(selected) > 100 else selected
+        state.messages.append({
+            "role": "assistant", "content": f"Generated sanitized quiz question for {state.topic}",
+            "action": "create_quiz_complete", "question_preview": preview
+        })
         return state
 
-    def present_quiz(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Present the quiz question to the user.
-        """
+    def present_quiz(self, state: HealthBotState) -> HealthBotState:
         print("\nQuiz Question:\n")
         print(state.quiz_question)
         return state
 
-    def get_quiz_answer(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Get the user's answer to the quiz question.
-        """
+    def get_quiz_answer(self, state: HealthBotState) -> HealthBotState:
         try:
             answer = input("\nEnter your answer to the quiz question: ")
         except EOFError:
             print("\nInput ended unexpectedly. Exiting HealthBot.")
             exit(0)
         state.quiz_answer = answer
-        
-        # Add user's quiz answer to messages for traceability
-        quiz_answer_message = {
-            "role": "user",
-            "content": f"Quiz answer: {answer}",
-            "action": "quiz_answer_submission",
-            "question": state.quiz_question,
+        state.messages.append({
+            "role": "user", "content": f"Quiz answer: {answer}",
+            "action": "quiz_answer_submission", "question": state.quiz_question,
             "timestamp": str(datetime.now())
-        }
-        state.messages.append(quiz_answer_message)
-        
+        })
         return state
 
-    def grade_quiz(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Grade the user's answer to the quiz question.
-        Enforce: use only the summary, output letter grade (A–F) plus brief justification.
-        """
+    def grade_quiz(self, state: HealthBotState) -> HealthBotState:
         llm = state.llm
         prompt = (
-            "You are grading a comprehension question. You must provide EXACTLY a letter grade (A, B, C, D, or F) and justification.\n\n"
-            "CRITICAL REQUIREMENTS:\n"
-            "1. You MUST output a letter grade: A, B, C, D, or F (no other grades allowed)\n"
-            "2. Use EXCLUSIVELY the information from the summary below - absolutely NO outside knowledge\n"
-            "3. Your justification must ONLY reference information that appears in the summary\n"
-            "4. If the answer contradicts the summary, grade it lower\n"
-            "5. If the answer matches information in the summary, grade it higher\n"
-            "6. Do NOT add any information not found in the summary\n\n"
-            "GRADING SCALE:\n"
-            "A = Completely accurate based on summary information\n"
-            "B = Mostly accurate with minor gaps based on summary\n"
-            "C = Partially accurate but missing key summary points\n"
-            "D = Limited accuracy, contradicts some summary information\n"
-            "F = Incorrect or completely contradicts the summary\n\n"
-            "REQUIRED FORMAT (follow exactly):\n"
-            "Grade: [single letter A, B, C, D, or F]\n"
-            "Justification: [1-2 sentences explaining the grade based ONLY on summary content]\n\n"
-            "SUMMARY (your ONLY data source):\n"
-            f"{state.summary}\n\n"
-            "QUESTION:\n"
-            f"{state.quiz_question}\n\n"
-            "STUDENT'S ANSWER:\n"
-            f"{state.quiz_answer}\n\n"
-            "PROVIDE YOUR GRADE AND JUSTIFICATION:"
+            "You are a strict grading assistant. You must grade the user's answer using ONLY the provided SUMMARY.\n"
+            "If the answer invents information not present in the SUMMARY, penalize it.\n"
+            "If the answer contradicts the SUMMARY, penalize it.\n"
+            "If the answer partially matches, give a middle grade.\n"
+            "If the answer fully and accurately reflects key points in the SUMMARY, give a high grade.\n\n"
+            "RESTRICTIONS:\n"
+            "- You SHOULD NOT use any knowledge outside the SUMMARY.\n"
+            "- Do NOT add new facts.\n"
+            "- Justification MUST cite only facts/phrases that appear in the SUMMARY.\n\n"
+            "ALLOWED GRADES:\nA = Completely accurate based only on SUMMARY\nB = Mostly accurate, minor omissions\nC = Partially accurate, missing important points\nD = Limited accuracy, several errors or omissions\nF = Incorrect or largely not based on SUMMARY\n\n"
+            "OUTPUT FORMAT (must follow exactly, no extra lines):\n"
+            "Grade: <A|B|C|D|F>\nJustification: <one concise sentence using only SUMMARY info>\n\n"
+            f"SUMMARY (sole source of truth):\n{state.summary}\n\n"
+            f"QUESTION:\n{state.quiz_question}\n\n"
+            f"USER ANSWER:\n{state.quiz_answer}\n\n"
+            "Now produce ONLY the required two-line format."
         )
-        
-        # Add grading request to messages for traceability
-        grading_request_message = {
-            "role": "user",
-            "content": f"Requesting grade for quiz answer on topic: {state.topic}",
-            "action": "grade_quiz",
-            "user_answer": state.quiz_answer
-        }
-        state.messages.append(grading_request_message)
-        
+        state.messages.append({
+            "role": "user", "content": f"Requesting grade for quiz on {state.topic}",
+            "action": "grade_quiz", "user_answer": state.quiz_answer or ""
+        })
+        if llm is None:
+            state.grading = "LLM not initialized to grade quiz answer."
+            return state
         grading = llm.invoke(prompt)
-        # Extract content from AIMessage if needed
-        if hasattr(grading, 'content'):
-            state.grading = grading.content
-        else:
-            state.grading = str(grading)
-            
-        # Add grading response to messages for traceability
-        grading_response_message = {
-            "role": "assistant",
-            "content": f"Completed grading for {state.topic} quiz question",
-            "action": "grade_quiz_complete",
-            "grading_preview": state.grading[:100] + "..." if len(state.grading) > 100 else state.grading
-        }
-        state.messages.append(grading_response_message)
-        
+        raw_text = grading.content if hasattr(grading, 'content') else str(grading)
+
+        # Post-process to enforce exact format.
+        lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
+        grade_val = None
+        justification_val = None
+        for line in lines:
+            low = line.lower()
+            if low.startswith('grade:') and grade_val is None:
+                possible = line.split(':', 1)[1].strip().upper()
+                if possible and possible[0] in {'A','B','C','D','F'}:
+                    grade_val = possible[0]
+            elif low.startswith('justification:') and justification_val is None:
+                justification_val = line.split(':', 1)[1].strip()
+
+        # Fallback extraction if not properly structured.
+        if grade_val is None:
+            # Search for standalone letter
+            for cand in ['A','B','C','D','F']:
+                if f' {cand} ' in f' {raw_text} ':
+                    grade_val = cand
+                    break
+        if grade_val is None:
+            grade_val = 'F'  # default fail-safe
+        if not justification_val:
+            justification_val = 'Answer lacks sufficient alignment with the provided summary.'
+
+        # Truncate overly long justification
+        if len(justification_val) > 280:
+            justification_val = justification_val[:277] + '...'
+
+        state.grading = f"Grade: {grade_val}\nJustification: {justification_val}"
+        preview = (state.grading[:100] + "...") if len(state.grading) > 100 else state.grading
+        state.messages.append({
+            "role": "assistant", "content": f"Completed grading for {state.topic}",
+            "action": "grade_quiz_complete", "grading_preview": preview
+        })
         return state
 
-    def present_feedback(
-        self,
-        state: HealthBotState,
-    ) -> HealthBotState:
-        """
-        Present the feedback to the user with proper grade formatting.
-        """
+    def present_feedback(self, state: HealthBotState) -> HealthBotState:
         print("\nYour grade and feedback:\n")
-        
-        # Ensure the grading follows the required format
-        grading_text = state.grading
-        
-        # Extract grade and justification if they're properly formatted
+        grading_text = state.grading or ""
         lines = grading_text.strip().split('\n')
         grade_line = ""
         justification_line = ""
-        
-        for line in lines:
-            if line.strip().lower().startswith('grade:'):
-                grade_line = line.strip()
-            elif line.strip().lower().startswith('justification:'):
-                justification_line = line.strip()
-            elif grade_line and not justification_line and line.strip():
-                # If we have a grade but no explicit justification line, treat this as justification
-                justification_line = "Justification: " + line.strip()
-        
-        # Display the formatted feedback
+        for ln in lines:
+            lower = ln.strip().lower()
+            if lower.startswith('grade:'):
+                grade_line = ln.strip()
+            elif lower.startswith('justification:'):
+                justification_line = ln.strip()
+            elif grade_line and not justification_line and ln.strip():
+                justification_line = "Justification: " + ln.strip()
         if grade_line:
             print(grade_line)
         if justification_line:
             print(justification_line)
-        
-        # If formatting is not as expected, display the raw grading
         if not grade_line or not justification_line:
             print(grading_text)
-        
+        # Ask user for next action to set continue_flag
+        try:
+            choice = input("\nWhat next? (quiz=another quiz question, new=new topic, enter=exit): ").strip().lower()
+        except EOFError:
+            choice = ""
+        if choice == 'quiz':
+            state.continue_flag = 'quiz'
+        elif choice == 'new':
+            state.continue_flag = 'new'
+        else:
+            state.continue_flag = None
+        state.messages.append({
+            "role": "user",
+            "content": f"Next action choice: {choice or 'exit'}",
+            "action": "post_feedback_choice"
+        })
         return state

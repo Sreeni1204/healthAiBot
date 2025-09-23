@@ -6,10 +6,10 @@ Users can specify various parameters such as the LLM backend, model name, and te
 """
 
 import argparse
+import os
 
 from healthaibot.utils.utils import HealthBotUtils
 from healthaibot.graph import build_healthbot_graph
-from healthaibot.utils.agent_utils import GraphHelper
 
 
 def main():
@@ -38,6 +38,14 @@ def main():
     # Add more arguments as needed
     args = parser.parse_args()
 
+    # Preflight: ensure Tavily API key present before starting agent to avoid hallucinated summaries
+    if not os.environ.get("TAVILY_API_KEY"):
+        print("ERROR: TAVILY_API_KEY environment variable not set.\n")
+        print("To use the search tool, export your key first (replace YOUR_KEY):")
+        print("\n  export TAVILY_API_KEY=YOUR_KEY\n")
+        print("Then re-run the command: healthaibot --llm_type=ollama --model_name=gemma3:1b")
+        return
+
     healthbot = HealthBotUtils(
         llm_type=args.llm_type,
         model_name=args.model_name,
@@ -51,56 +59,9 @@ def main():
     app = graph.compile()
 
     print("Welcome to HealthBot!")
-    while True:
-        state = healthbot.reset_state(llm)
-        # Run the graph workflow to execute the full flow including focus question
-        state = app.invoke(state)
-
-        # The graph already handled focus, search, summarization, and summary presentation
-        # No need to duplicate these steps here
-        
-        # Convert state back to HealthBotState if it's a dict
-        if isinstance(state, dict):
-            from healthaibot.utils.utils import HealthBotState
-            state = HealthBotState(**state)
-
-        # Track previous questions for this topic
-        if not hasattr(state, 'previous_questions'):
-            state.previous_questions = []
-        
-        # Create GraphHelper for quiz operations
-        graphhelper = GraphHelper()
-        quiz_active = True
-        while quiz_active:
-            # Create and present quiz
-            state = graphhelper.create_quiz(state)
-            question, options = healthbot.parse_quiz(state.quiz_question)
-            print("\nQuiz Question:")
-            print(question)
-            
-            # Only print options if this is a multiple choice question
-            if options:
-                for opt in options:
-                    print(opt)
-            
-            state.previous_questions.append(question)
-            state = graphhelper.get_quiz_answer(state)
-            state = graphhelper.grade_quiz(state)
-            state = graphhelper.present_feedback(state)
-
-            try:
-                next_action = input("Would you like to take another quiz on this topic (enter 'quiz'), learn about a new topic (enter 'new'), or exit (enter 'exit')? ")
-            except EOFError:
-                print("\nInput ended unexpectedly. Thank you for using HealthBot. Stay healthy!")
-                return
-            if next_action.lower() == 'quiz':
-                print("Let's take another quiz on this topic!")
-                continue  # Stay in quiz loop
-            elif next_action.lower() == 'new':
-                print("Let's learn about a new topic!")
-                quiz_active = False  # Break quiz loop, go to new topic
-            elif next_action.lower() == 'exit':
-                print("Thank you for using HealthBot. Stay healthy!")
-                return
-            else:
-                print("Invalid input. Please enter 'quiz', 'new', or 'exit'.")
+    # Single invocation; looping & quiz handled internally by graph via continue_flag routing
+    state = healthbot.reset_state(llm)
+    state = app.invoke(state, config={"recursion_limit": 100})
+    # If user chose to start a new topic or additional quizzes, the graph's conditional edges manage it;
+    # CLI exits after first completed flow.
+    print("\nThank you for using HealthBot. Stay healthy!")

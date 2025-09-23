@@ -5,16 +5,17 @@ Utility functions for HealthBot operations.
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any
 
 from langchain_openai import ChatOpenAI
 from langchain_ollama.chat_models import ChatOllama
 
 
 class HealthBotState(BaseModel):
-    messages: List[Dict[str, str]] = Field(
-        default_factory=list, 
-        description="List of conversation messages including tool calls for traceability"
+    # Allow either raw dicts or LangChain BaseMessage objects
+    messages: List[Any] = Field(
+        default_factory=list,
+        description="List of conversation messages (dicts or LangChain messages) including tool calls for traceability"
     )
     topic: Optional[str] = None
     focus: Optional[str] = None
